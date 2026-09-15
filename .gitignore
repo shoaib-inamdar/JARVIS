@@ -1,0 +1,64 @@
+# ── Secrets (NEVER commit these) ──────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+.cache/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+htmlcov/
+.coverage
+coverage.xml
+
+# ── Virtual environments ───────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Node / Electron / npm ─────────────────────────────────
+node_modules/
+.npm/
+.yarn/
+dist-electron/
+out/
+release/
+*.tsbuildinfo
+
+# ── OS files ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor ────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# ── uv ────────────────────────────────────────────────────
+uv.lock
+
+# ── Database / storage ────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+chroma_db/
+
+# ── Logs ──────────────────────────────────────────────────
+*.log
+logs/

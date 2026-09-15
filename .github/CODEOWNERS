@@ -1,0 +1,13 @@
+# CODEOWNERS — who reviews what
+# Format: pattern   @username
+# Change @yourusername to your actual GitHub username
+
+# Everything by default
+*                   @yourusername
+
+# Agents (safety-critical — always needs review)
+/agents/safety/     @yourusername
+/agents/desktop/    @yourusername
+
+# Core shared code
+/core/              @yourusername

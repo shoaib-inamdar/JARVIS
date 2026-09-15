@@ -1,0 +1,37 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "JARVIS — Just A Rather Very Intelligent System. An AI-powered anime desktop companion."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.13"
+
+authors = [
+    { name = "JARVIS Dev" }
+]
+
+keywords = ["ai", "assistant", "desktop", "anime", "langgraph", "gemini"]
+
+dependencies = [
+    # Phase 2 — will be added by student
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/JARVIS"
+Repository = "https://github.com/yourusername/JARVIS"
+
+[project.scripts]
+jarvis = "main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.ruff]
+# Ruff config lives in .ruff.toml

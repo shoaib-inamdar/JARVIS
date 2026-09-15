@@ -1,0 +1,63 @@
+# Ruff configuration for JARVIS
+# Docs: https://docs.astral.sh/ruff/configuration/
+
+line-length = 100
+indent-width = 4
+target-version = "py313"
+
+[lint]
+# Rules to enable
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort (import sorting)
+    "B",   # flake8-bugbear (catches real bugs)
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade (modern Python syntax)
+    "N",   # pep8-naming
+    "RUF", # ruff-specific rules
+    "SIM", # flake8-simplify
+    "TID", # flake8-tidy-imports
+    "ANN", # flake8-annotations (type hints)
+    "PTH", # use pathlib instead of os.path
+    "ERA", # eradicate commented-out code
+]
+
+# Rules to ignore (with reasons)
+ignore = [
+    "ANN101", # missing type for 'self' — not needed
+    "ANN102", # missing type for 'cls'  — not needed
+    "ERA001", # commented-out code — too aggressive for learning project
+]
+
+# Allow fix for all fixable rules
+fixable = ["ALL"]
+unfixable = []
+
+# Files/directories to exclude from linting
+exclude = [
+    ".git",
+    ".venv",
+    "node_modules",
+    "__pycache__",
+    "*.egg-info",
+    "build",
+    "dist",
+]
+
+[lint.isort]
+known-first-party = ["agents", "core"]
+force-sort-within-sections = true
+
+[lint.per-file-ignores]
+# Tests don't need type annotations everywhere
+"tests/**" = ["ANN"]
+# Init files can have unused imports (re-exporting)
+"**/__init__.py" = ["F401"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"

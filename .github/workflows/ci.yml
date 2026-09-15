@@ -1,0 +1,37 @@
+# JARVIS Continuous Integration
+# Runs automatically on every push and pull request
+
+name: CI
+
+on:
+  push:
+    branches: ["main", "dev"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  lint-and-test:
+    name: Lint & Test (Python)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run Ruff linter
+        run: uv run ruff check .
+
+      - name: Run Ruff formatter check
+        run: uv run ruff format --check .
+
+      - name: Run tests
+        run: uv run pytest tests/ -v
