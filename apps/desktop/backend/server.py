@@ -1,6 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-
+from agents.graph.graph import jarvis_graph
 from agents.chat.agent import ChatAgent
 
 from .models import ChatRequest, ChatResponse, HealthResponse
@@ -13,12 +13,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# One shared agent — created once when the server starts, reused for all requests
 agent = ChatAgent()
+initial_state = {
+    "user_input":request.message,
+    "messages":[],
+    "intent":"chat",
+    "plan":"",
+    "safe_to_run":True,
+    "final_reply":"",
+}
 
-
-# ── Lifecycle events ──────────────────────────────────────────────────────────
+result = jarvis_graph.invoke(initial_state)
+reply = result["final_reply"]
 
 
 @app.on_event("startup")
@@ -30,8 +36,6 @@ async def startup_event() -> None:
 async def shutdown_event() -> None:
     print("JARVIS backend shutting down...")
 
-
-# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -69,8 +73,6 @@ def clear_history() -> dict:
     return {"message": "Conversation history cleared."}
 
 
-# ── WebSocket ─────────────────────────────────────────────────────────────────
-
 
 @app.websocket("/ws/chat")
 async def chat_websocket(websocket: WebSocket) -> None:
@@ -82,10 +84,9 @@ async def chat_websocket(websocket: WebSocket) -> None:
             reply = agent.chat(data)
             await websocket.send_text(reply)
         except WebSocketDisconnect:
-            break  # client disconnected — exit cleanly
+            break  
 
 
-# ── Direct run (for testing without main.py) ──────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
