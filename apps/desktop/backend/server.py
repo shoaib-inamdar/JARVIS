@@ -1,7 +1,10 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from agents.graph.graph import jarvis_graph
+
 from agents.chat.agent import ChatAgent
+from agents.chat.graph.graph import jarvis_graph
+from agents.coding.graph import coding_graph
+from apps.desktop.backend.models import CodingRequest
 
 from .models import ChatRequest, ChatResponse, HealthResponse
 
@@ -14,17 +17,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 agent = ChatAgent()
-initial_state = {
-    "user_input":request.message,
-    "messages":[],
-    "intent":"chat",
-    "plan":"",
-    "safe_to_run":True,
-    "final_reply":"",
-}
-
-result = jarvis_graph.invoke(initial_state)
-reply = result["final_reply"]
 
 
 @app.on_event("startup")
@@ -35,7 +27,6 @@ async def startup_event() -> None:
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     print("JARVIS backend shutting down...")
-
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -50,12 +41,22 @@ def health() -> HealthResponse:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
-    """Receive a user message and return JARVIS's reply."""
+    """Receive a user message and return JARVIS's reply via the LangGraph pipeline."""
     try:
-        reply = agent.chat(request.message)
+        state = jarvis_graph.invoke(
+            {
+                "user_input": request.message,
+                "messages": [],
+                "intent": "chat",
+                "plan": "",
+                "safe_to_run": True,
+                "final_reply": "",
+            }
+        )
+        reply = state["final_reply"]
         return ChatResponse(
             reply=reply,
-            message_count=agent.get_message_count(),
+            message_count=len(state.get("messages", [])),
             status="ok",
         )
     except Exception:
@@ -73,7 +74,6 @@ def clear_history() -> dict:
     return {"message": "Conversation history cleared."}
 
 
-
 @app.websocket("/ws/chat")
 async def chat_websocket(websocket: WebSocket) -> None:
     """Real-time two-way connection for streaming responses (used from Phase 4 onward)."""
@@ -84,8 +84,42 @@ async def chat_websocket(websocket: WebSocket) -> None:
             reply = agent.chat(data)
             await websocket.send_text(reply)
         except WebSocketDisconnect:
-            break  
+            break
 
+
+@app.post("/coding")
+async def coding_endpoint(request: CodingRequest) -> dict:
+    initial_state = {
+        "user_request": request.message,
+        "current_mode": "coding",
+        "project_root": request.project_root or ".",
+        "relevant_files": [],
+        "open_file": request.open_file or "",
+        "error_context": request.error_context or "",
+        "plan_steps": [],
+        "current_step": 0,
+        "plan_approved": False,
+        "proposed_patch": "",
+        "patch_approved": False,
+        "action_history": [],
+        "test_results": "",
+        "lint_results": "",
+        "verified": False,
+        "pending_permission": "",
+        "safety_flags": [],
+        "blocked": False,
+        "final_reply": "",
+        "avatar_mood": "thinking",
+    }
+
+    result = coding_graph.invoke(initial_state)
+    return {
+        "reply": result["final_reply"],
+        "avatar_mood": result["avatar_mood"],
+        "plan": result["plan_steps"],
+        "patch": result["proposed_patch"],
+        "verified": result["verified"],
+    }
 
 
 if __name__ == "__main__":

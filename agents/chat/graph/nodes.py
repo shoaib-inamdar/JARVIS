@@ -1,9 +1,8 @@
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 
-from agents.graph.state import JARVISState
-from core.config.settings import GEMINI_API_KEY, AI_MODEL
-
+from agents.chat.graph.state import JARVISState
+from core.config.settings import AI_MODEL, GEMINI_API_KEY
 
 llm = ChatGoogleGenerativeAI(
     model=AI_MODEL,
@@ -15,36 +14,36 @@ llm = ChatGoogleGenerativeAI(
 def planner_node(state: JARVISState) -> dict:
     """Classify the request and create a plan for tasks."""
 
-    classifier_prompt= """
+    classifier_prompt = """
     You are an intent classifier. Reply with ONLY one word:
     - chat: conversation or information requests
     - task: requests to perform actions, such as opening apps,
       searching, taking screenshots, or creating files.
     """
 
-    response=llm.invoke([
-        SystemMessage(content=classifier_prompt),
-        HumanMessage(content=state["user_input"]),
-    ])
+    response = llm.invoke(
+        [
+            SystemMessage(content=classifier_prompt),
+            HumanMessage(content=state["user_input"]),
+        ]
+    )
 
-    intent=str(response.content).strip().lower()
+    intent = str(response.content).strip().lower()
 
     if intent not in ("chat", "task"):
         intent = "chat"
 
-    plan=""
+    plan = ""
 
-    if intent=="task":
-        plan_prompt=(
+    if intent == "task":
+        plan_prompt = (
             f"The user wants to: {state['user_input']}\n"
             "List the steps needed in ONE short sentence. "
             "Do not execute anything."
         )
 
-        plan_response=llm.invoke([
-            HumanMessage(content=plan_prompt)
-        ])
-        plan=str(plan_response.content).strip()
+        plan_response = llm.invoke([HumanMessage(content=plan_prompt)])
+        plan = str(plan_response.content).strip()
 
     return {
         "intent": intent,
@@ -52,10 +51,10 @@ def planner_node(state: JARVISState) -> dict:
     }
 
 
-def chat_node(state:JARVISState) -> dict:
+def chat_node(state: JARVISState) -> dict:
     """Answer the user using the available conversation history."""
 
-    messages=[
+    messages = [
         SystemMessage(
             content=(
                 "You are JARVIS, a friendly and intelligent AI "
@@ -63,11 +62,13 @@ def chat_node(state:JARVISState) -> dict:
             )
         ),
         *state["messages"],
+        # Always add user_input as the final message so Gemini has content
+        HumanMessage(content=state["user_input"]),
     ]
 
-    response=llm.invoke(messages)
+    response = llm.invoke(messages)
 
-    return{
+    return {
         "final_reply": str(response.content).strip(),
     }
 
@@ -90,9 +91,7 @@ def safety_node(state: JARVISState) -> dict:
     Reply with ONLY: safe OR unsafe.
     """
 
-    response = llm.invoke([
-        HumanMessage(content=safety_prompt)
-    ])
+    response = llm.invoke([HumanMessage(content=safety_prompt)])
 
     verdict = str(response.content).strip().lower()
     safe_to_run = verdict == "safe"

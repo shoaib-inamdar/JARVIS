@@ -3,3 +3,6 @@ rich
 fastapi
 uvicorn
 google-genai
+langgraph
+langchain-google-genai 
+ollama

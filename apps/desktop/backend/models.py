@@ -22,3 +22,10 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     agent_ready: bool
+
+
+class CodingRequest(BaseModel):
+    message: str
+    project_root: str = "."
+    open_file: str = ""
+    error_context: str = ""

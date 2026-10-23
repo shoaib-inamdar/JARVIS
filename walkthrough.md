@@ -18,7 +18,7 @@
 | 3 | ⚡ FastAPI Backend | Python ↔ Electron communication bridge | ✅ Done |
 | 4 | 🖥️ Electron + React UI | Real desktop window with Tailwind chat interface | ✅ Done |
 | 5 | 🎭 Live2D Anime Avatar | Anime avatar with expressions and animations | ✅ Done |
-| 6 | 🔗 LangGraph Agents | Planner + Desktop + Safety agents skeleton | 🔄 In Progress |
+| 6 | 🔗 LangGraph Agents | Planner + Desktop + Safety agents skeleton | ✅ Done |
 | 7 | 🧰 Laya Tool Registry | Open-source plugin system for all JARVIS abilities | ⏳ Planned |
 | 8 | 🛠️ Tool Decision Layer | LangGraph tool-call routing wired into Laya | ⏳ Planned |
 | 9 | 🖱️ Desktop Automation | PyAutoGUI + Playwright + Windows APIs as Laya tools | ⏳ Planned |
@@ -2984,3 +2984,1568 @@ will be registered as a Laya tool. Adding a new JARVIS ability = adding one new 
 ---
 
 *Phase 6 — LangGraph Agents*
+
+---
+
+# 🖥️ Phase 7 — JARVIS Coding Mode
+
+> This is the most powerful phase in the project. Read everything carefully before you start.
+> **Stop after this phase and tell me "Phase 7 done!" when finished!**
+
+---
+
+## 🎯 Goal
+
+Add a **Coding Mode** to JARVIS — a specialised multi-agent system that can:
+
+- Read, write, and edit files safely
+- Run terminal commands with your permission
+- Fix bugs, explain code, add features, write tests
+- Work with **free or local LLMs** (no paid Claude or GPT-4 required)
+- Narrate every action through the JARVIS avatar
+
+Think of it as your own personal junior-to-mid developer living inside JARVIS,
+who asks permission before touching anything important and shows their work.
+
+---
+
+## 🤔 Should You Build This? (Yes — Here's Why)
+
+Coding agents get their power from TWO things:
+1. The language model (brain)
+2. The **harness** — the tools, loop, planning, verification, and safety layer
+
+Research by Anthropic, Google, and Stanford shows the **harness often matters as
+much as the model**. A great harness with a free local model can outperform a
+weak harness with an expensive one. That's exactly what you're going to build.
+
+**Free/local model strategy:**
+- Default: `Gemini 2.5 Flash` (free tier) — fast, good at code
+- Local fallback: `Ollama` with `qwen2.5-coder:7b` or `deepseek-coder:6.7b`
+- Router: small tasks → local, complex reasoning → Gemini free
+
+---
+
+## 🏗️ Architecture Overview
+
+```
+User request: "Fix the bug in server.py line 42"
+                        │
+                        ▼
+              ┌─────────────────┐
+              │  Planner Agent  │  Reads files, understands context,
+              │                 │  makes a step-by-step plan
+              └────────┬────────┘
+                       │ plan approved by user?
+                       ▼
+              ┌─────────────────┐
+              │   Code Agent    │  Reads/edits files, proposes patches
+              └────────┬────────┘
+                       │ needs terminal?
+                  ┌────┴────┐
+                  │         │
+                  ▼         ▼
+         ┌──────────┐  ┌──────────┐
+         │ Terminal │  │ Safety   │  Permission check before
+         │  Agent   │  │  Agent   │  any destructive command
+         └────┬─────┘  └──────────┘
+              │
+              ▼
+     ┌─────────────────┐
+     │ Verifier Agent  │  Runs tests / lint / diff check
+     └────────┬────────┘
+              │ success?
+              ▼
+     ┌─────────────────┐
+     │  Memory Agent   │  Saves what worked, what failed,
+     │                 │  user preferences, project rules
+     └────────┬────────┘
+              │
+              ▼
+       JARVIS Avatar narrates the result 🎭
+```
+
+---
+
+## 🧠 Shared State (The Whiteboard)
+
+```
+PSEUDOCODE — agents/graph/coding_state.py:
+
+class CodingState(TypedDict):
+
+    # ── Request ──────────────────────────────────────
+    user_request:   str    # What the user asked for
+    current_mode:   str    # Always "coding" for this graph
+
+    # ── Context ──────────────────────────────────────
+    project_root:   str    # Absolute path to project folder
+    relevant_files: list   # List of file paths the agents should look at
+    open_file:      str    # Currently active file (from Electron IDE)
+    error_context:  str    # Error message / stack trace if fixing a bug
+
+    # ── Planning ─────────────────────────────────────
+    plan_steps:     list   # ["Read server.py", "Fix line 42", "Run tests"]
+    current_step:   int    # Which step we are on
+    plan_approved:  bool   # Did the user confirm the plan?
+
+    # ── Actions ──────────────────────────────────────
+    proposed_patch: str    # The diff/edit proposed by Code Agent
+    patch_approved: bool   # Did the user confirm the patch?
+    action_history: list   # Log of everything done so far
+
+    # ── Verification ─────────────────────────────────
+    test_results:   str    # Output from running tests
+    lint_results:   str    # Output from ruff/mypy
+    verified:       bool   # Did verification pass?
+
+    # ── Safety ───────────────────────────────────────
+    pending_permission: str   # Command waiting for user approval
+    safety_flags:       list  # List of warnings from Safety Agent
+    blocked:            bool  # True = stop everything
+
+    # ── Output ───────────────────────────────────────
+    final_reply:    str    # What JARVIS says back to the user
+    avatar_mood:    str    # "thinking", "coding", "verifying", "happy", "stuck"
+```
+
+---
+
+## 🤖 The Six Agents
+
+### Agent 1: Planner Agent
+
+**Job:** Understand the request, find relevant files, write a step-by-step plan.
+
+```
+PSEUDOCODE — planner_node(state):
+
+1. Read the project rules file (JARVIS.md) if it exists
+2. Read any files mentioned in user_request or open_file
+3. Identify which files are relevant to the task
+4. Build a numbered plan:
+   "1. Read server.py to understand current code
+    2. Identify the bug at line 42
+    3. Propose a minimal patch
+    4. Run ruff to check syntax
+    5. Run tests if available"
+5. Set avatar_mood = "thinking"
+6. Return: {
+       "plan_steps": [...],
+       "relevant_files": [...],
+       "plan_approved": False  ← wait for user approval
+   }
+```
+
+**Key rule:** For any task touching more than 1 file OR running a command,
+always write a plan first and wait for user confirmation.
+
+---
+
+### Agent 2: Code Agent
+
+**Job:** Read files and propose patches. Never writes directly — always proposes first.
+
+```
+PSEUDOCODE — code_node(state):
+
+TOOL: read_file(path) → returns file content
+TOOL: search_codebase(query, root) → returns matching lines + file paths
+TOOL: propose_patch(file_path, old_text, new_text) → returns unified diff
+
+Steps:
+1. Read relevant files using read_file tool
+2. Understand the specific problem
+3. Think: "What is the smallest change that fixes this?"
+4. Generate a unified diff (patch) showing old vs new
+5. Set proposed_patch = the diff
+6. Set avatar_mood = "coding"
+7. Return: {"proposed_patch": diff, "patch_approved": False}
+```
+
+**Key rule:** Always show the diff. Never silently overwrite a file.
+
+---
+
+### Agent 3: Terminal Agent
+
+**Job:** Run shell commands — but ONLY after Safety Agent approves.
+
+```
+PSEUDOCODE — terminal_node(state):
+
+TOOL: run_command(cmd, cwd, timeout=30) → stdout, stderr, exit_code
+
+Steps:
+1. Determine which command is needed (e.g. "uv run ruff check .")
+2. Set pending_permission = the command
+3. Wait for user confirmation (return state, UI shows "Allow this command?")
+4. If approved:
+   - Run the command
+   - Capture stdout + stderr
+   - Add to action_history
+5. Return: {"test_results": output, "pending_permission": ""}
+```
+
+**Safe commands** (auto-approved): `ruff check`, `ruff format`, `pytest`, `python --version`
+**Ask permission**: `pip install`, `uv add`, any file deletion, `git push`
+**Always blocked**: `rm -rf`, `format`, `del /f /s`, anything with `sudo`
+
+---
+
+### Agent 4: Safety Agent
+
+**Job:** Review every proposed action before it runs. Block dangerous things.
+
+```
+PSEUDOCODE — safety_node(state):
+
+BLOCKLIST = [
+    "rm -rf", "del /f /s", "format c:",
+    "DROP TABLE", "os.remove", "shutil.rmtree",
+    "> /dev/null", "sudo", "passwd"
+]
+
+Steps:
+1. Check pending_permission against BLOCKLIST
+2. Ask LLM: "Is this command safe to run in a coding context?
+              Command: {state['pending_permission']}
+              Reply: safe / unsafe / ask_user"
+3. If "safe":   set blocked=False, allow
+4. If "unsafe": set blocked=True, final_reply = "I blocked that — it's too risky."
+5. If "ask_user": surface to UI, wait for explicit yes/no
+6. Add result to safety_flags
+7. Return: {"blocked": ..., "safety_flags": [...]}
+```
+
+---
+
+### Agent 5: Verifier Agent
+
+**Job:** After any edit or command, verify the result. Never claim success without checking.
+
+```
+PSEUDOCODE — verifier_node(state):
+
+Steps:
+1. Run ruff check on changed files → lint_results
+2. If tests/ folder exists → run pytest → test_results
+3. Otherwise: show the diff and ask user "Does this look correct?"
+4. Parse results:
+   - ruff: 0 errors = pass
+   - pytest: all passed = pass
+   - user confirmed = pass
+5. Set verified = (all checks passed)
+6. Set avatar_mood = "happy" if verified else "stuck"
+7. Return: {"verified": ..., "lint_results": ..., "test_results": ...}
+```
+
+---
+
+### Agent 6: Memory Agent
+
+**Job:** Remember what worked, what failed, user preferences, project rules.
+
+```
+PSEUDOCODE — memory_node(state):
+
+TOOL: read_rules(project_root) → reads JARVIS.md rules
+TOOL: save_to_memory(key, value) → writes to .jarvis/memory.json
+TOOL: recall(query) → searches .jarvis/memory.json for relevant past info
+
+Steps:
+1. Read JARVIS.md project rules at task start
+2. After success: save what worked ("Fixed ImportError by adding __init__.py")
+3. After failure: save what to avoid ("Running pytest without --no-header crashes")
+4. Save user preferences if stated ("User prefers 4-space indent, no semicolons")
+5. Return: {"action_history": [updated log]}
+```
+
+---
+
+## 🛠️ Tool List
+
+| Tool | What It Does | Permission Level |
+|------|-------------|-----------------|
+| `read_file(path)` | Read any file as text | Auto-approved |
+| `list_files(dir)` | List directory contents | Auto-approved |
+| `search_codebase(query, root)` | Grep-style search | Auto-approved |
+| `propose_patch(path, old, new)` | Show diff — does NOT write | Auto-approved |
+| `apply_patch(path, old, new)` | Actually write the change | **Requires confirmation** |
+| `run_command(cmd)` | Run shell command | **Requires confirmation** |
+| `run_safe_lint(path)` | Run ruff check only | Auto-approved |
+| `run_tests(root)` | Run pytest | Auto-approved |
+| `read_rules()` | Read JARVIS.md | Auto-approved |
+| `save_memory(key, val)` | Write to .jarvis/memory.json | Auto-approved |
+
+---
+
+## 📋 JARVIS.md — Project Rules File
+
+Create this file in any project you work on with JARVIS.
+It tells the Coding Mode how to behave in that specific project:
+
+```markdown
+# JARVIS Project Rules
+
+## Stack
+- Language: Python 3.13
+- Package manager: uv (NOT pip)
+- Linter: ruff
+- Test runner: pytest
+
+## Code Style
+- Max line length: 100
+- Use type hints everywhere
+- Prefer pathlib over os.path
+- No commented-out code
+
+## Commands
+- Install package: uv add <package>
+- Run tests: uv run pytest tests/ -v
+- Check lint: uv run ruff check .
+- Format: uv run ruff format .
+- Start server: uv run python main.py --server
+
+## Never Do
+- Never use pip install
+- Never delete files without confirmation
+- Never push to main directly
+- Never use os.system() — use subprocess instead
+
+## Project Structure
+- Backend: apps/desktop/backend/
+- Agents: agents/
+- Config: core/config/
+```
+
+---
+
+## 🔄 Plan → Act → Verify Flow
+
+```
+SIMPLE TASK ("fix the syntax error"):
+User → Planner reads file → Code Agent proposes patch →
+User confirms → patch applied → Verifier runs ruff →
+"Fixed!" → Memory saves the fix style
+
+COMPLEX TASK ("refactor the entire auth module"):
+User → Planner writes 5-step plan → User confirms plan →
+Step 1: Code Agent reads all files → shows summary
+Step 2: Code Agent proposes patch for file 1 → User confirms → Apply
+Step 3: Code Agent proposes patch for file 2 → User confirms → Apply
+Step 4: Terminal Agent runs tests → Verifier checks results
+Step 5: Memory Agent saves refactor pattern
+"Done! All 5 steps complete, 3 files changed, all tests pass." → avatar happy
+
+RISKY TASK ("delete all __pycache__ folders"):
+User → Planner writes plan → Safety Agent flags: "This deletes files" →
+"Show me the files first?" → User sees list → User confirms →
+Terminal Agent runs with explicit approval → Verifier confirms gone → Done
+```
+
+---
+
+## 🤖 Free/Local LLM Strategy
+
+### Default Stack (What To Use)
+
+| Task | Model | Why |
+|------|-------|-----|
+| Planning + reasoning | `gemini-2.5-flash` (free) | Best free reasoning |
+| Simple code edits | `qwen2.5-coder:7b` (local Ollama) | Fast, free, great at code |
+| Routing decisions | `gemini-flash-lite` or tiny local | Cheap/fast |
+| Verification analysis | `gemini-2.5-flash` (free) | Needs to understand test output |
+
+### How To Keep Prompts Short (For Weak Models)
+
+1. **Never pass the whole file** — pass only the relevant function + 5 lines of context
+2. **Use structured output** — ask the model to reply in JSON or a fixed format
+3. **One job per prompt** — don't ask a small model to plan AND code at once
+4. **Pre-filter with search** — find relevant lines before sending to LLM
+
+### Graceful Degradation
+
+If the local model gives a bad patch:
+1. Verifier catches it (ruff fails / tests fail)
+2. Falls back to Gemini free for a second attempt
+3. If still failing: shows the diff to user and says "I'm stuck — can you review this?"
+
+---
+
+## 📁 Folder Structure
+
+```
+JARVIS/
+├── agents/
+│   ├── chat/
+│   │   └── agent.py          ← exists
+│   ├── graph/                ← Phase 6 (LangGraph base)
+│   │   ├── __init__.py
+│   │   ├── state.py
+│   │   ├── nodes.py
+│   │   └── graph.py
+│   └── coding/               ← Phase 7 (NEW)
+│       ├── __init__.py
+│       ├── coding_state.py   ← CodingState TypedDict
+│       ├── tools.py          ← read_file, apply_patch, run_command, etc.
+│       ├── nodes.py          ← all 6 agent nodes
+│       ├── graph.py          ← builds the coding StateGraph
+│       └── rules.py          ← reads JARVIS.md and .jarvis/memory.json
+├── .jarvis/
+│   ├── memory.json           ← what the Memory Agent saves
+│   └── rules.md              ← global coding rules (project-specific goes in JARVIS.md)
+└── JARVIS.md                 ← per-project rules (created by user in each project)
+```
+
+---
+
+## 🚀 MVP vs Full Version
+
+### MVP (Build This First) ✅
+
+- [ ] `read_file` and `list_files` tools
+- [ ] `propose_patch` (show diff, don't apply yet)
+- [ ] `apply_patch` with user confirmation in terminal
+- [ ] `run_safe_lint` (ruff only, auto-approved)
+- [ ] Planner + Code + Verifier agents only (no Terminal/Safety/Memory yet)
+- [ ] Coding Mode activated by typing "code: " before your request
+- [ ] Avatar mood: thinking / coding / verifying / happy / stuck
+
+### Full Version (Add Later) 🔮
+
+- [ ] Terminal Agent with Safety permission system
+- [ ] Memory Agent with `.jarvis/memory.json`
+- [ ] JARVIS.md reader
+- [ ] Local Ollama model routing
+- [ ] Electron UI panel for Coding Mode (show plan, approve steps, see diff)
+- [ ] Multi-file refactors
+- [ ] Streaming output (see edits happen live)
+- [ ] Skill library (reusable playbooks: "add API endpoint", "create React component")
+
+---
+
+## 🪜 Step-by-Step Implementation
+
+---
+
+### Step 1 — Install Dependencies
+
+```
+uv add langgraph langchain-google-genai ollama
+```
+
+Verify:
+```
+uv run python -c "import langgraph; print('LangGraph ok')"
+```
+
+---
+
+### Step 2 — Create `agents/coding/tools.py`
+
+```
+PSEUDOCODE for agents/coding/tools.py:
+
+IMPORTS:
+    subprocess, pathlib, json, difflib
+
+─────────────────────────────────────
+TOOL: read_file(path: str) → str
+─────────────────────────────────────
+    file = Path(path)
+    if not file.exists(): return "ERROR: File not found"
+    if file.stat().st_size > 100_000: return "ERROR: File too large (>100KB)"
+    return file.read_text(encoding="utf-8")
+
+─────────────────────────────────────
+TOOL: list_files(directory: str, extensions: list = None) → list[str]
+─────────────────────────────────────
+    root = Path(directory)
+    results = []
+    For each file in root.rglob("*"):
+        Skip: .venv, node_modules, .git, __pycache__, *.egg-info
+        If extensions is None OR file.suffix in extensions:
+            results.append(str(file))
+    return results[:50]   ← cap at 50 files
+
+─────────────────────────────────────
+TOOL: search_codebase(query: str, root: str) → str
+─────────────────────────────────────
+    results = []
+    For each .py file in list_files(root, [".py"]):
+        content = read_file(file)
+        For each line in content.splitlines():
+            if query.lower() in line.lower():
+                results.append(f"{file}:{line_number}: {line}")
+    return "\n".join(results[:30])   ← cap at 30 matches
+
+─────────────────────────────────────
+TOOL: propose_patch(path: str, old_text: str, new_text: str) → str
+─────────────────────────────────────
+    diff = difflib.unified_diff(
+        old_text.splitlines(keepends=True),
+        new_text.splitlines(keepends=True),
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+    )
+    return "".join(diff)   ← returns a readable diff, does NOT write anything
+
+─────────────────────────────────────
+TOOL: apply_patch(path: str, old_text: str, new_text: str) → str
+─────────────────────────────────────
+    file = Path(path)
+    current = file.read_text(encoding="utf-8")
+    if old_text not in current:
+        return "ERROR: Old text not found — file may have changed"
+    updated = current.replace(old_text, new_text, 1)
+    file.write_text(updated, encoding="utf-8")
+    return f"SUCCESS: {path} updated"
+
+─────────────────────────────────────
+TOOL: run_safe_lint(path: str) → str
+─────────────────────────────────────
+    result = subprocess.run(
+        ["uv", "run", "ruff", "check", path],
+        capture_output=True, text=True, timeout=30
+    )
+    return result.stdout + result.stderr
+
+─────────────────────────────────────
+TOOL: run_tests(root: str) → str
+─────────────────────────────────────
+    tests_dir = Path(root) / "tests"
+    if not tests_dir.exists():
+        return "No tests/ folder found"
+    result = subprocess.run(
+        ["uv", "run", "pytest", "tests/", "-v", "--tb=short"],
+        capture_output=True, text=True, timeout=60, cwd=root
+    )
+    return result.stdout[-3000:]  ← last 3000 chars (tests can be long)
+
+─────────────────────────────────────
+TOOL: read_rules(project_root: str) → str
+─────────────────────────────────────
+    jarvis_md = Path(project_root) / "JARVIS.md"
+    if jarvis_md.exists():
+        return jarvis_md.read_text(encoding="utf-8")
+    return ""  ← no rules file, that's fine
+```
+
+---
+
+### Step 3 — Create `agents/coding/coding_state.py`
+
+Write the full `CodingState` TypedDict from the pseudocode in the Architecture section above.
+
+---
+
+### Step 4 — Create `agents/coding/nodes.py`
+
+Write all 6 agent node functions (MVP: just Planner, Code, Verifier).
+
+Use this LLM setup at the top:
+```
+PSEUDOCODE — LLM setup:
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+from core.config.settings import GEMINI_API_KEY, AI_MODEL
+
+llm = ChatGoogleGenerativeAI(
+    model=AI_MODEL,
+    google_api_key=GEMINI_API_KEY,
+    temperature=0.2      ← lower temp for code = more predictable
+)
+```
+
+---
+
+### Step 5 — Create `agents/coding/graph.py`
+
+```
+PSEUDOCODE for agents/coding/graph.py:
+
+from langgraph.graph import StateGraph, END
+from .coding_state import CodingState
+from .nodes import (
+    planner_node, code_node, verifier_node,
+    safety_node, terminal_node, memory_node
+)
+
+def build_coding_graph():
+    g = StateGraph(CodingState)
+
+    g.add_node("planner",  planner_node)
+    g.add_node("code",     code_node)
+    g.add_node("safety",   safety_node)
+    g.add_node("terminal", terminal_node)
+    g.add_node("verifier", verifier_node)
+    g.add_node("memory",   memory_node)
+
+    g.set_entry_point("planner")
+
+    # After planning → code agent
+    g.add_edge("planner", "code")
+
+    # After code proposes patch → check if terminal needed
+    g.add_conditional_edges(
+        "code",
+        route_after_code,    ← returns "terminal" or "verifier"
+        {"terminal": "safety", "verifier": "verifier"}
+    )
+
+    # Safety check → then actually run terminal
+    g.add_edge("safety",   "terminal")
+    g.add_edge("terminal", "verifier")
+
+    # Verifier → memory → done
+    g.add_edge("verifier", "memory")
+    g.add_edge("memory",   END)
+
+    return g.compile()
+
+ROUTER: route_after_code(state) → str:
+    If state has a pending_permission (needs terminal):
+        return "terminal"
+    Else:
+        return "verifier"   ← just lint check, no command needed
+
+coding_graph = build_coding_graph()
+```
+
+---
+
+### Step 6 — Add Coding Mode to the API
+
+In `server.py`, add a new `/coding` endpoint alongside `/chat`:
+
+```
+PSEUDOCODE — new endpoint in server.py:
+
+@app.post("/coding")
+async def coding_endpoint(request: CodingRequest):
+    initial_state = {
+        "user_request": request.message,
+        "current_mode": "coding",
+        "project_root": request.project_root or ".",
+        "relevant_files": [],
+        "open_file": request.open_file or "",
+        "error_context": request.error_context or "",
+        "plan_steps": [],
+        "current_step": 0,
+        "plan_approved": False,
+        "proposed_patch": "",
+        "patch_approved": False,
+        "action_history": [],
+        "test_results": "",
+        "lint_results": "",
+        "verified": False,
+        "pending_permission": "",
+        "safety_flags": [],
+        "blocked": False,
+        "final_reply": "",
+        "avatar_mood": "thinking",
+    }
+    result = coding_graph.invoke(initial_state)
+    return {
+        "reply":       result["final_reply"],
+        "avatar_mood": result["avatar_mood"],
+        "plan":        result["plan_steps"],
+        "patch":       result["proposed_patch"],
+        "verified":    result["verified"],
+    }
+```
+
+Also add to `models.py`:
+```
+class CodingRequest(BaseModel):
+    message:      str
+    project_root: str = "."
+    open_file:    str = ""
+    error_context: str = ""
+```
+
+---
+
+### Step 7 — Wire Avatar Moods to Coding Mode
+
+In `App.jsx`, when a `/coding` response arrives, set the avatar expression:
+
+```
+PSEUDOCODE — changes to App.jsx:
+
+When coding response arrives:
+    if result.avatar_mood == "thinking":   setAvatarExpression("thinking")
+    if result.avatar_mood == "coding":     setAvatarExpression("thinking")
+    if result.avatar_mood == "verifying":  setAvatarExpression("thinking")
+    if result.avatar_mood == "happy":      setAvatarExpression("happy")
+    if result.avatar_mood == "stuck":      setAvatarExpression("speaking")
+```
+
+---
+
+### Step 8 — Create a JARVIS.md for This Project
+
+Create `JARVIS.md` in your project root (copy the template from the
+Architecture section above and fill it in for the JARVIS project itself).
+
+---
+
+### Step 9 — Test Coding Mode
+
+```
+uv run python -c "
+from agents.coding.graph import coding_graph
+
+# Test 1: explain code
+r = coding_graph.invoke({
+    'user_request': 'Explain what agents/chat/agent.py does',
+    'current_mode': 'coding',
+    'project_root': '.',
+    'relevant_files': [], 'open_file': '',
+    'error_context': '', 'plan_steps': [],
+    'current_step': 0, 'plan_approved': False,
+    'proposed_patch': '', 'patch_approved': False,
+    'action_history': [], 'test_results': '',
+    'lint_results': '', 'verified': False,
+    'pending_permission': '', 'safety_flags': [],
+    'blocked': False, 'final_reply': '', 'avatar_mood': 'thinking'
+})
+print('Plan:', r['plan_steps'])
+print('Reply:', r['final_reply'])
+print('Mood:', r['avatar_mood'])
+"
+```
+
+---
+
+### Step 10 — Ruff, Format, Commit
+
+```
+uv run ruff check .
+uv run ruff format .
+git add .
+git commit -m "Phase 7: Coding Mode - multi-agent coding harness"
+git push
+```
+
+---
+
+## ⚠️ Risks and How You Avoid Them
+
+| Risk | How JARVIS Handles It |
+|------|-----------------------|
+| Bad patch breaks working code | `propose_patch` shows diff first, user confirms |
+| Runaway terminal command | Safety Agent blocklist + explicit user confirmation |
+| Weak model produces garbage | Verifier catches it; falls back to Gemini free |
+| Model hallucinates a file path | `read_file` returns "File not found", agent retries |
+| Infinite loop between agents | LangGraph `recursion_limit=25` stops it |
+| File too large for context | 100KB limit in `read_file`; search instead of reading |
+| User loses track of changes | `action_history` keeps full log; avatar narrates each step |
+
+---
+
+## ✅ Phase 7 Success Checklist
+
+- [ ] 🟢 `agents/coding/tools.py` — all 7 tools implemented and tested
+- [ ] 🟢 `agents/coding/coding_state.py` — CodingState TypedDict defined
+- [ ] 🟢 `agents/coding/nodes.py` — Planner, Code, Verifier nodes working
+- [ ] 🟢 `agents/coding/graph.py` — graph compiles without errors
+- [ ] 🟢 Test script: "explain agents/chat/agent.py" returns a plan + reply
+- [ ] 🟢 `/coding` API endpoint added to server.py
+- [ ] 🟢 `JARVIS.md` created at project root
+- [ ] 🟢 Avatar mood changes during coding tasks
+- [ ] 🟢 `uv run ruff check .` — zero errors
+- [ ] 🟢 Git commit + push done
+
+---
+
+## 🎊 What You Have After Phase 7
+
+JARVIS can now help you write and fix code — safely, step by step, with:
+- A Planner that thinks before acting
+- A Code Agent that proposes (never blindly applies) changes
+- A Verifier that catches mistakes before you even see them
+- Safety blocks on dangerous commands
+- An anime avatar that narrates every step 🎭
+
+You have built something that most professional developers don't have on their machines.
+
+---
+
+## 🎉 When Done
+
+Tell me **"Phase 7 done!"** and we move to **Phase 8 — Laya Tool Registry** 🧰
+
+In Phase 8 you will install Laya and register your first desktop automation tools.
+Every action JARVIS can take (open apps, take screenshots, click things) becomes
+a Laya tool — adding new abilities = adding one new file.
+
+---
+
+*Phase 7 — JARVIS Coding Mode*
+
+---
+
+# 🧠 JARVIS Coding Mode — Capability Guide
+
+> What can you build with it? How do you use it? How strong is it?
+> Read this once — then you'll know exactly what to expect.
+
+---
+
+## ✅ What Can JARVIS Coding Mode Do RIGHT NOW?
+
+Even with the MVP you just built, JARVIS can:
+
+| Task | Example |
+|------|---------|
+| **Explain code** | "Explain what server.py does" |
+| **Find bugs** | "Find where the CORS error is coming from" |
+| **Plan a refactor** | "How would I split agents/chat into smaller modules?" |
+| **Lint and verify** | Runs ruff automatically after every change |
+| **Remember context** | Saves task history in `.jarvis/memory.json` |
+| **Block dangerous commands** | `rm -rf`, `format c:` are always blocked |
+| **Read project rules** | Follows your JARVIS.md before every task |
+
+---
+
+## 🏗️ Apps and Websites You Can Build With It
+
+### 🟢 Beginner Level — JARVIS helps you write from scratch
+
+| Project | How JARVIS helps |
+|---------|-----------------|
+| **To-do list app** (HTML + JS) | Writes the HTML, JS, and CSS for you |
+| **Calculator** | Generates the logic and layout |
+| **Weather app** (fetch API) | Writes the fetch call and UI |
+| **Personal portfolio site** | Generates pages, styles, and layout |
+| **Python number game** | Writes the game loop and input handling |
+| **FastAPI Hello World** | Sets up the routes and models |
+
+**How to ask JARVIS:**
+```
+code: Create a simple weather app in HTML that fetches weather from OpenWeatherMap API
+```
+JARVIS will: plan → read project rules → write the code → show the diff → lint it
+
+---
+
+### 🟡 Intermediate Level — JARVIS helps you extend and fix
+
+| Project | How JARVIS helps |
+|---------|-----------------|
+| **React dashboard** | Adds new components, fixes prop errors |
+| **FastAPI REST API** | Adds routes, fixes validation errors |
+| **Discord bot** (discord.py) | Adds commands, handles events |
+| **CLI tool** (Click/Typer) | Adds flags, writes help text |
+| **Browser extension** | Writes manifest.json + background scripts |
+| **Data analysis script** | Writes pandas/matplotlib code from description |
+| **Automated test suite** | Writes pytest tests for existing functions |
+
+**How to ask JARVIS:**
+```
+code: Add a /users endpoint to apps/desktop/backend/server.py that returns a list of users
+code: Fix the TypeError on line 42 of agents/chat/nodes.py
+code: Write pytest tests for the read_file function in agents/coding/tools.py
+```
+
+---
+
+### 🔴 Advanced Level — JARVIS assists a senior developer
+
+| Project | What JARVIS can do |
+|---------|-------------------|
+| **Multi-file refactor** | Plans across files, shows diffs one at a time |
+| **LangGraph agent** | Writes state, nodes, graph like it did for you |
+| **Electron desktop app** | Writes main.cjs, preload, IPC bridge |
+| **Database integration** | Writes SQLAlchemy models, alembic migrations |
+| **Web scraper** | Writes BeautifulSoup/playwright scraping logic |
+| **Custom CLI** | Full Typer/Click app with subcommands |
+
+> ⚠️ At this level JARVIS helps — but you need to understand the output
+> and approve every step. It won't magically write a full production app.
+
+---
+
+## 📏 How Strong Is It Compared To Antigravity / Claude Code?
+
+This is an honest comparison:
+
+| Feature | Claude Code / Antigravity | Your JARVIS Coding Mode |
+|---------|--------------------------|------------------------|
+| **Model intelligence** | ⭐⭐⭐⭐⭐ Frontier models | ⭐⭐⭐ Gemini Flash (free) |
+| **Tool quality** | ⭐⭐⭐⭐⭐ Very mature | ⭐⭐⭐ Good MVP |
+| **Multi-file edits** | ✅ Native | 🔄 One file at a time (now) |
+| **Streaming** | ✅ Live | ❌ Not yet |
+| **Terminal execution** | ✅ Full | ✅ With safety blocks |
+| **Diff + approval** | ✅ | ✅ |
+| **Cost** | 💸 $20+/month | 🆓 Free |
+| **Local model support** | ❌ | ✅ (Ollama, Phase 8) |
+| **Anime avatar** | ❌ | ✅ 🎭 |
+| **You understand every line** | ❌ | ✅ You built it |
+
+**Honest answer:**
+- For simple-to-intermediate tasks: **comparable results** with a weaker model
+- For complex multi-file production refactors: Claude Code is currently much stronger
+- But your harness is solid — swapping in a stronger model (GPT-4o, Claude 3.5 via API) makes it much more competitive
+- **The harness you built is what matters.** The model is swappable.
+
+---
+
+## 🤖 How To Use Local LLMs (Ollama)
+
+### Step 1 — Install Ollama
+
+Go to [ollama.com](https://ollama.com) and install for Windows.
+
+### Step 2 — Pull a Coding Model
+
+```bash
+# Best free coding models (pick one):
+ollama pull qwen2.5-coder:7b      # Best for code — highly recommended
+ollama pull deepseek-coder:6.7b   # Very good at debugging
+ollama pull codellama:7b           # Meta's coding model
+ollama pull llama3.2:3b            # Tiny but fast for routing
+```
+
+### Step 3 — Install LangChain Ollama
+
+```bash
+uv add langchain-ollama
+```
+
+### Step 4 — Update `nodes.py` to Use Ollama
+
+In `agents/coding/nodes.py`, replace the LLM setup:
+
+```python
+# BEFORE (Gemini cloud):
+from langchain_google_genai import ChatGoogleGenerativeAI
+llm = ChatGoogleGenerativeAI(model=AI_MODEL, ...)
+
+# AFTER (Ollama local):
+from langchain_ollama import ChatOllama
+llm = ChatOllama(model="qwen2.5-coder:7b", temperature=0.2)
+```
+
+Or use **both** — Gemini for complex reasoning, Ollama for fast simple tasks:
+
+```python
+import os
+from langchain_ollama import ChatOllama
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+USE_LOCAL = os.getenv("JARVIS_USE_LOCAL", "false").lower() == "true"
+
+if USE_LOCAL:
+    llm = ChatOllama(model="qwen2.5-coder:7b", temperature=0.2)
+else:
+    llm = ChatGoogleGenerativeAI(model=AI_MODEL, google_api_key=GEMINI_API_KEY, temperature=0.2)
+```
+
+Set in `.env`:
+```
+JARVIS_USE_LOCAL=true   # use Ollama
+JARVIS_USE_LOCAL=false  # use Gemini (default)
+```
+
+### Which Model For Which Task?
+
+| Task | Best Local Model | Why |
+|------|-----------------|-----|
+| Write new code | `qwen2.5-coder:7b` | Trained specifically on code |
+| Fix a bug | `deepseek-coder:6.7b` | Great at debugging reasoning |
+| Explain code | `llama3.2:3b` | Fast, good at explanations |
+| Routing/planning | `llama3.2:3b` | Tiny but sufficient |
+| Complex multi-file | Gemini Flash (cloud) | Needs more context window |
+
+---
+
+## 💡 Simple Steps — How To Actually Use It
+
+### Method 1: Python script (right now, works today)
+
+```bash
+uv run python -c "
+from agents.coding.graph import coding_graph
+
+result = coding_graph.invoke({
+    'user_request': 'Explain what main.py does',
+    'current_mode': 'coding',
+    'project_root': '.',
+    'relevant_files': [], 'open_file': '', 'error_context': '',
+    'plan_steps': [], 'current_step': 0, 'plan_approved': True,
+    'proposed_path': '', 'patch_approved': False, 'action_history': [],
+    'test_results': '', 'list_results': '', 'verified': False,
+    'pending_permission': '', 'safety_flags': [], 'blocked': False,
+    'final_reply': '', 'avatar_mood': 'thinking'
+})
+print(result['final_reply'])
+"
+```
+
+### Method 2: FastAPI endpoint (coming in Phase 8)
+
+```bash
+# Start server
+uv run python main.py --server
+
+# Send a coding request
+curl -X POST http://localhost:8000/coding \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Explain agents/chat/agent.py", "project_root": "."}'
+```
+
+### Method 3: JARVIS UI chat (Phase 9)
+
+Type in the UI chat box:
+```
+code: Fix the bug in server.py line 42
+```
+JARVIS will detect "code:" prefix → route to Coding Mode → show avatar in "thinking" state → return the plan
+
+---
+
+## 🛣️ What We're Adding Next (The Roadmap)
+
+| Phase | Feature | What It Unlocks |
+|-------|---------|----------------|
+| **8** | Laya Tool Registry | JARVIS can open apps, search the web, take screenshots |
+| **9** | Desktop Automation | "Open Chrome", "Take a screenshot", "Click that button" |
+| **10** | Guide Mode | JARVIS watches your screen and gives step-by-step help |
+| **11** | Voice | Talk to JARVIS, hear replies with a custom voice |
+| **12** | Memory + Learning | Remembers your preferences across sessions |
+
+---
+
+## 🔮 My Suggestions For You
+
+**1. Upgrade the coding model first (biggest impact)**
+Once you want JARVIS to actually apply patches (not just plan), use
+`qwen2.5-coder:7b` locally — it's free, fast, and trained specifically on code.
+
+**2. Add "code:" prefix routing to the UI**
+In `App.jsx`, detect messages starting with `"code:"` and route them to `/coding`
+instead of `/chat`. Makes the mode feel seamless.
+
+**3. Add the Verifier to the UI**
+Show a green/red "Verification" badge in the chat when the verifier runs.
+Makes JARVIS feel much more trustworthy.
+
+**4. Build something with it!**
+The best way to improve your coding agent is to USE it.
+Try: `"code: Write a simple snake game in Python using pygame"`
+
+**5. Don't try to match Claude Code immediately**
+Build the foundation first (phases 8-12), then iterate.
+By Phase 12 with voice + memory + Ollama local models,
+you'll have something genuinely impressive.
+
+---
+
+*JARVIS Coding Mode Capability Guide — Phase 7*
+
+
+---
+
+# 🧰 Phase 8 — Laya Tool Registry & Desktop Automation
+
+> **Stop after this phase and tell me "Phase 8 done!" when finished!**
+
+---
+
+## 🎯 Goal
+
+Give JARVIS the ability to **do things on your computer**, not just talk about them.
+
+By the end of this phase:
+- JARVIS can open applications (Chrome, Notepad, VS Code)
+- JARVIS can take screenshots and describe what's on screen
+- JARVIS can search the web and return results
+- Every action is registered as a **Laya Tool** — adding a new ability = creating one file
+- All actions go through the Safety Agent (no surprises)
+
+---
+
+## 🤔 What Is Laya?
+
+**Laya** is an open-source Python tool registry designed for AI agents.
+
+Think of it as a **plugin system for JARVIS**:
+- Each tool = one Python function with a name, description, and schema
+- The AI reads the description to know when to use it
+- Laya handles the registration, discovery, and calling of tools
+- You add a new JARVIS ability by dropping a new file into `tools/`
+
+Compared to writing raw tool calls:
+
+| Without Laya | With Laya |
+|-------------|----------|
+| Tools scattered across files | All tools in `tools/` folder |
+| Agent must know exact tool names | Agent reads descriptions, picks automatically |
+| Hard to add new tools | Drop a file → tool is auto-registered |
+| No schema validation | Laya validates inputs/outputs |
+
+---
+
+## 🏗️ Architecture After Phase 8
+
+```
+User: "Open Chrome and search for Python tutorials"
+            │
+            ▼
+     [Planner Agent]
+      intent = "task"
+      plan = ["Open Chrome", "Search Python tutorials"]
+            │
+            ▼
+     [Safety Agent]
+      "Both steps are safe"
+            │
+            ▼
+     [Desktop Agent]  ← NEW in Phase 8
+      Laya Tool: open_app("chrome")
+      Laya Tool: web_search("Python tutorials")
+            │
+            ▼
+     [Verifier Agent]
+      Screenshot confirms Chrome opened ✅
+            │
+            ▼
+     JARVIS reply: "Done! Chrome is open and I searched for Python tutorials."
+     Avatar: happy 😊
+```
+
+---
+
+## 🛠️ The Tool Registry Design
+
+```
+JARVIS/
+└── tools/                    ← NEW folder
+    ├── __init__.py            ← auto-discovers all tools
+    ├── registry.py            ← Laya registry setup
+    ├── desktop/
+    │   ├── open_app.py        ← open any Windows app
+    │   ├── screenshot.py      ← take and save a screenshot
+    │   └── type_text.py       ← type text into a window
+    └── web/
+        ├── web_search.py      ← search DuckDuckGo (free, no API key)
+        └── open_url.py        ← open a URL in the browser
+```
+
+Every tool file follows the same 3-part pattern:
+1. A Python function that does the work
+2. A `ToolSchema` that describes it in English
+3. Registration with the Laya registry
+
+---
+
+## 🪜 Step-by-Step Instructions
+
+---
+
+### Step 1 — Install Dependencies
+
+```bash
+uv add pyautogui pillow duckduckgo-search psutil
+```
+
+- `pyautogui` — control mouse and keyboard, take screenshots
+- `pillow` — image handling for screenshots
+- `duckduckgo-search` — free web search, no API key needed
+- `psutil` — list and check running processes
+
+Verify:
+```bash
+uv run python -c "import pyautogui, PIL, duckduckgo_search, psutil; print('All good!')"
+```
+
+---
+
+### Step 2 — Create `tools/registry.py`
+
+```
+PSEUDOCODE for tools/registry.py:
+
+IMPORTS:
+    dataclasses, typing, logging
+
+@dataclass
+class Tool:
+    name:        str    # snake_case identifier e.g. "open_app"
+    description: str    # plain English for the AI to understand
+    func:        callable  # the actual Python function to run
+    parameters:  dict   # JSON Schema of the function's inputs
+
+class ToolRegistry:
+
+    def __init__(self):
+        self._tools: dict[str, Tool] = {}
+
+    def register(self, tool: Tool) -> None:
+        self._tools[tool.name] = tool
+
+    def get(self, name: str) -> Tool | None:
+        return self._tools.get(name)
+
+    def list_tools(self) -> list[dict]:
+        """Return a list of {name, description} for the AI to read."""
+        return [
+            {"name": t.name, "description": t.description}
+            for t in self._tools.values()
+        ]
+
+    def call(self, name: str, **kwargs) -> str:
+        tool = self.get(name)
+        if tool is None:
+            return f"ERROR: Tool '{name}' not found"
+        try:
+            result = tool.func(**kwargs)
+            return str(result)
+        except Exception as exc:
+            return f"ERROR: {exc}"
+
+# Singleton — imported everywhere
+registry = ToolRegistry()
+```
+
+---
+
+### Step 3 — Create `tools/__init__.py`
+
+This file auto-discovers and registers all tools:
+
+```
+PSEUDOCODE for tools/__init__.py:
+
+IMPORTS:
+    importlib, pkgutil, pathlib, logging
+
+def load_all_tools() -> None:
+    """Walk every sub-module in the tools/ folder and import it.
+    Each module is expected to call registry.register() at import time.
+    """
+    tools_dir = Path(__file__).parent
+
+    For each .py file found recursively in tools_dir:
+        Skip __init__.py and registry.py
+        Build the dotted module path: "tools.desktop.open_app"
+        importlib.import_module(module_path)
+        log: "Loaded tool: {module_path}"
+
+load_all_tools()
+```
+
+---
+
+### Step 4 — Create `tools/desktop/open_app.py`
+
+```
+PSEUDOCODE for tools/desktop/open_app.py:
+
+IMPORTS:
+    subprocess, psutil, shutil
+    from tools.registry import registry, Tool
+
+KNOWN_APPS = {
+    "chrome":   ["chrome", "google-chrome", "chrome.exe"],
+    "firefox":  ["firefox", "firefox.exe"],
+    "notepad":  ["notepad", "notepad.exe"],
+    "vscode":   ["code", "code.exe"],
+    "explorer": ["explorer", "explorer.exe"],
+    "terminal": ["wt", "cmd.exe", "powershell.exe"],
+}
+
+def open_app(app_name: str) -> str:
+    name_lower = app_name.lower().strip()
+
+    candidates = KNOWN_APPS.get(name_lower, [name_lower])
+
+    For candidate in candidates:
+        executable = shutil.which(candidate)
+        if executable:
+            subprocess.Popen([executable])
+            return f"Opened {app_name} successfully."
+
+    return f"ERROR: Could not find '{app_name}'. Is it installed?"
+
+# Register with Laya
+registry.register(Tool(
+    name="open_app",
+    description=(
+        "Opens an application on the Windows desktop. "
+        "Supported: chrome, firefox, notepad, vscode, explorer, terminal. "
+        "Pass the app name as a string."
+    ),
+    func=open_app,
+    parameters={
+        "app_name": {"type": "string", "description": "Name of the app to open"}
+    }
+))
+```
+
+---
+
+### Step 5 — Create `tools/desktop/screenshot.py`
+
+```
+PSEUDOCODE for tools/desktop/screenshot.py:
+
+IMPORTS:
+    pyautogui, pathlib, datetime
+    from tools.registry import registry, Tool
+
+SCREENSHOT_DIR = Path(".jarvis") / "screenshots"
+
+def take_screenshot(label: str = "") -> str:
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{timestamp}_{label or 'screenshot'}.png"
+    path = SCREENSHOT_DIR / filename
+
+    screenshot = pyautogui.screenshot()
+    screenshot.save(str(path))
+
+    return f"Screenshot saved: {path}"
+
+registry.register(Tool(
+    name="take_screenshot",
+    description=(
+        "Takes a screenshot of the entire screen and saves it. "
+        "Returns the file path. Use to verify what is on screen."
+    ),
+    func=take_screenshot,
+    parameters={
+        "label": {"type": "string", "description": "Optional label for the filename"}
+    }
+))
+```
+
+---
+
+### Step 6 — Create `tools/web/web_search.py`
+
+```
+PSEUDOCODE for tools/web/web_search.py:
+
+IMPORTS:
+    from duckduckgo_search import DDGS
+    from tools.registry import registry, Tool
+
+def web_search(query: str, max_results: int = 5) -> str:
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+
+        if not results:
+            return "No results found."
+
+        formatted = []
+        for i, r in enumerate(results, 1):
+            formatted.append(
+                f"{i}. {r['title']}\n   {r['href']}\n   {r['body'][:200]}"
+            )
+
+        return "\n\n".join(formatted)
+
+    except Exception as exc:
+        return f"Search error: {exc}"
+
+registry.register(Tool(
+    name="web_search",
+    description=(
+        "Searches the web using DuckDuckGo (no API key needed). "
+        "Returns title, URL, and a short description for each result. "
+        "Use for factual questions or finding resources."
+    ),
+    func=web_search,
+    parameters={
+        "query":       {"type": "string",  "description": "What to search for"},
+        "max_results": {"type": "integer", "description": "Number of results (default 5)"}
+    }
+))
+```
+
+---
+
+### Step 7 — Add a Desktop Agent Node
+
+Add a new node `desktop_node` to the existing multi-agent graph in
+`agents/chat/graph/nodes.py`:
+
+```
+PSEUDOCODE for desktop_node(state: JARVISState) -> dict:
+
+IMPORTS:
+    import tools   ← this triggers load_all_tools() automatically
+    from tools.registry import registry
+
+Steps:
+    1. Get the plan steps from state["plan"]
+    2. Build a list of available tools: registry.list_tools()
+    3. Ask the LLM:
+       "You have these tools available: {tools_list}
+        The user's plan is: {state['plan']}
+        Which tool(s) should you call, and with what arguments?
+        Reply as JSON: [{'tool': 'open_app', 'args': {'app_name': 'chrome'}}]"
+    4. Parse the LLM's JSON response
+    5. For each tool call:
+       a. Send to Safety Agent first (via state["pending_permission"])
+       b. If approved: result = registry.call(tool_name, **args)
+       c. Append result to action_history
+    6. Build a summary reply
+    7. Return: {
+           "final_reply": summary,
+           "action_history": [...],
+           "avatar_mood": "happy" if all succeeded else "stuck"
+       }
+```
+
+---
+
+### Step 8 — Add Desktop Node to the Graph
+
+In `agents/chat/graph/graph.py`, update the task flow:
+
+```
+PSEUDOCODE — update to graph.py:
+
+Before:
+    safety → END
+
+After:
+    safety → desktop_node → verifier → END
+
+New edges:
+    graph.add_node("desktop", desktop_node)
+    graph.add_edge("safety", "desktop")
+    graph.add_edge("desktop", "verifier")
+    graph.add_edge("verifier", END)
+```
+
+---
+
+### Step 9 — Test the Tools Directly
+
+Test each tool without the graph first:
+
+```bash
+uv run python -c "
+import tools  # loads all tools
+from tools.registry import registry
+
+print('Available tools:')
+for t in registry.list_tools():
+    print(f'  - {t[\"name\"]}: {t[\"description\"][:60]}')
+
+# Test web search
+result = registry.call('web_search', query='Python tutorials', max_results=3)
+print()
+print('Search result:')
+print(result[:300])
+
+# Test screenshot
+shot = registry.call('take_screenshot', label='test')
+print()
+print('Screenshot:', shot)
+"
+```
+
+---
+
+### Step 10 — Test Full Graph With a Task
+
+```bash
+uv run python -c "
+from agents.chat.graph.graph import jarvis_graph
+
+r = jarvis_graph.invoke({
+    'user_input': 'Search the web for Python LangGraph tutorials',
+    'messages': [], 'intent': 'chat',
+    'plan': '', 'safe_to_run': True, 'final_reply': ''
+})
+
+print('Intent:', r['intent'])
+print('Reply:', r['final_reply'][:300])
+"
+```
+
+---
+
+### Step 11 — Ruff, Format, Commit
+
+```bash
+uv run ruff check .
+uv run ruff format .
+git add .
+git commit -m "Phase 8: Laya Tool Registry + Desktop automation tools"
+git push
+```
+
+---
+
+## 📁 New Files in Phase 8
+
+| File | Purpose |
+|------|---------|
+| `tools/__init__.py` | Auto-discovers and loads all tools |
+| `tools/registry.py` | `ToolRegistry` + `Tool` dataclass |
+| `tools/desktop/open_app.py` | Open Windows applications |
+| `tools/desktop/screenshot.py` | Take desktop screenshots |
+| `tools/desktop/type_text.py` | Type text via pyautogui |
+| `tools/web/web_search.py` | DuckDuckGo search (no API key) |
+| `tools/web/open_url.py` | Open a URL in the browser |
+
+---
+
+## ⚠️ Common Mistakes
+
+| Mistake | Fix |
+|---------|-----|
+| `pyautogui.screenshot()` fails on Windows | Add `import pyautogui; pyautogui.FAILSAFE = False` |
+| `registry.call()` returns ERROR: Tool not found | You forgot `import tools` to trigger load_all_tools |
+| DuckDuckGo rate limits | Add `time.sleep(1)` between searches |
+| `subprocess.Popen` opens then closes | You need `subprocess.Popen(detach=True)` or `shell=True` on Windows |
+| Tool descriptions are too vague | The AI can't pick the right tool — be specific in description |
+
+---
+
+## ✅ Phase 8 Success Checklist
+
+- [ ] 🟢 `uv run python -c "import tools; print('Tools loaded')"` — no errors
+- [ ] 🟢 `registry.list_tools()` shows at least 4 tools
+- [ ] 🟢 `web_search("Python")` returns real results
+- [ ] 🟢 `take_screenshot()` saves a file in `.jarvis/screenshots/`
+- [ ] 🟢 `open_app("notepad")` opens Notepad
+- [ ] 🟢 Full graph handles task: "Search for Python tutorials"
+- [ ] 🟢 `uv run ruff check .` — zero errors
+- [ ] 🟢 Git commit + push done
+
+---
+
+## 🎊 What You Have After Phase 8
+
+JARVIS can now **do things** — not just talk.
+
+- 🔍 Search the web in real time
+- 📸 See what's on your screen
+- 💻 Open apps on command
+- 🧰 A clean tool registry where adding new abilities = one new file
+- 🛡️ Every action safely checked before execution
+
+---
+
+## 🎉 When Done
+
+Tell me **"Phase 8 done!"** and we move to **Phase 9 — Guide Mode** 🗺️
+
+In Phase 9, JARVIS will watch your screen using screenshots + OCR,
+understand what you're working on, and give you step-by-step real-time help.
+Think of it as having a pair programmer who can actually see your screen.
+
+---
+
+*Phase 8 — Laya Tool Registry & Desktop Automation*
