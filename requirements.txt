@@ -6,3 +6,7 @@ google-genai
 langgraph
 langchain-google-genai 
 ollama
+pyautogui 
+pillow 
+duckduckgo-search 
+psutil

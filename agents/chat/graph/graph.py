@@ -3,6 +3,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from agents.chat.graph.nodes import (
     chat_node,
+    desktop_node,
     planner_node,
     route_after_planner,
     safety_node,
@@ -16,6 +17,7 @@ def build_graph() -> CompiledStateGraph:
     graph.add_node("planner", planner_node)
     graph.add_node("chat", chat_node)
     graph.add_node("safety", safety_node)
+    graph.add_node("desktop", desktop_node)
     graph.set_entry_point("planner")
     graph.add_conditional_edges(
         "planner",
@@ -26,7 +28,9 @@ def build_graph() -> CompiledStateGraph:
         },
     )
     graph.add_edge("chat", END)
-    graph.add_edge("safety", END)
+    graph.add_edge("safety", "desktop")
+    graph.add_edge("desktop", "verifier")
+    graph.add_edge("verifier", END)
     return graph.compile()
 
 

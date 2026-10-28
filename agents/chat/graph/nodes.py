@@ -1,3 +1,7 @@
+import json
+import re
+from typing import Any
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -120,3 +124,199 @@ def route_after_planner(state: JARVISState) -> str:
         return "safety"
 
     return "chat"
+
+
+def desktop_node(state: JARVISState) -> dict:
+    from tools.registry import registry
+
+    history = list(state.get("action_history", []))
+    if state.get("blocked", False):
+        return {
+            "final_reply": "Desktop actions are blocked by safety checks.",
+            "action_history": history,
+            "avatar_mood": "stuck",
+        }
+    plan = state.get("plan", state.get("plan_steps", []))
+    if not plan:
+        return {
+            "final_reply": "No plan found. Create a plan before performing desktop actions.",
+            "action_history": history,
+            "avatar_mood": "stuck",
+        }
+
+    try:
+        available_tools = registry.list_tools()
+    except Exception as exc:
+        return {
+            "final_reply": f"Could not list desktop tools: {exc}",
+            "action_history": history,
+            "avatar_mood": "stuck",
+        }
+
+    try:
+        from agents.llm import get_llm
+
+        llm = get_llm()
+        prompt = f"""
+You are JARVIS's desktop-action planner.
+
+User request:
+{state.get("user_request", "")}
+
+Approved plan:
+{json.dumps(plan, ensure_ascii=False)}
+
+Available tools:
+{json.dumps(available_tools, ensure_ascii=False, default=str)}
+
+Return ONLY a JSON array in this format:
+[
+  {{"tool": "tool_name", "args": {{"argument": "value"}}}}
+]
+
+Rules:
+- Use only tools listed above.
+- Use only arguments supported by the selected tool.
+- Choose the minimum number of tools needed.
+- Do not invent tool names or arguments.
+- Do not execute commands or bypass permission checks.
+- Return [] if no tool is needed.
+"""
+        response = llm.invoke(prompt)
+        content = getattr(response, "content", response)
+        if not isinstance(content, str):
+            content = str(content)
+
+    except Exception as exc:
+        return {
+            "final_reply": f"Could not get a tool plan from the LLM: {exc}",
+            "action_history": history,
+            "avatar_mood": "stuck",
+        }
+
+    try:
+        cleaned = re.sub(
+            r"^\s*```(?:json)?\s*|\s*```\s*$",
+            "",
+            content.strip(),
+            flags=re.IGNORECASE,
+        )
+        tool_calls = json.loads(cleaned)
+
+        if not isinstance(tool_calls, list):
+            raise ValueError("LLM response must be a JSON array.")
+
+        for call in tool_calls:
+            if (
+                not isinstance(call, dict)
+                or not isinstance(call.get("tool"), str)
+                or not isinstance(call.get("args", {}), dict)
+            ):
+                raise ValueError("Invalid tool-call structure.")
+
+    except (json.JSONDecodeError, ValueError) as exc:
+        return {
+            "final_reply": f"Could not parse the LLM tool plan: {exc}",
+            "action_history": history,
+            "avatar_mood": "stuck",
+        }
+
+    results: list[dict[str, Any]] = []
+    all_succeeded = True
+
+    for call in tool_calls:
+        tool_name = call["tool"]
+        args = call.get("args", {})
+
+        try:
+            current_tools = registry.list_tools()
+            allowed_names = {
+                item if isinstance(item, str) else item.get("name") for item in current_tools
+            }
+            if tool_name not in allowed_names:
+                results.append(
+                    {
+                        "tool": tool_name,
+                        "success": False,
+                        "result": "Tool is not registered.",
+                    }
+                )
+                history.append(f"Rejected unregistered tool: {tool_name}")
+                all_succeeded = False
+                continue
+        except Exception as exc:
+            results.append(
+                {
+                    "tool": tool_name,
+                    "success": False,
+                    "result": f"Could not validate tool: {exc}",
+                }
+            )
+            all_succeeded = False
+            break
+
+        permission_request = json.dumps(
+            {"tool": tool_name, "args": args},
+            ensure_ascii=False,
+        )
+
+        approved_request = state.get("approved_desktop_action", "")
+        if approved_request != permission_request:
+            results.append(
+                {
+                    "tool": tool_name,
+                    "success": False,
+                    "result": "Awaiting explicit user approval.",
+                }
+            )
+            history.append(f"Approval required for desktop action: {tool_name}")
+
+            return {
+                "pending_permission": permission_request,
+                "final_reply": (
+                    f"JARVIS wants to use '{tool_name}'. "
+                    "Review the action and approve it before execution."
+                ),
+                "action_history": history,
+                "avatar_mood": "thinking",
+            }
+
+        try:
+            result = registry.call(tool_name, **args)
+            results.append(
+                {
+                    "tool": tool_name,
+                    "success": True,
+                    "result": str(result),
+                }
+            )
+            history.append(f"Executed {tool_name}: {result}")
+
+        except Exception as exc:
+            results.append(
+                {
+                    "tool": tool_name,
+                    "success": False,
+                    "result": str(exc),
+                }
+            )
+            history.append(f"Tool failed ({tool_name}): {exc}")
+            all_succeeded = False
+
+    if not tool_calls:
+        summary = "No desktop actions were needed."
+    else:
+        summary_lines = ["Desktop action results:"]
+        for item in results:
+            status = "SUCCESS" if item["success"] else "FAILED"
+            summary_lines.append(f"- {item['tool']}: {status} — {item['result']}")
+        summary = "\n".join(summary_lines)
+
+    all_succeeded = all_succeeded and all(item["success"] for item in results)
+
+    return {
+        "final_reply": summary,
+        "action_history": history,
+        "avatar_mood": "happy" if all_succeeded else "stuck",
+        "pending_permission": "",
+    }
