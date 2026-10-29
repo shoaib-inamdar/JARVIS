@@ -32,9 +32,23 @@ def planner_node(state: JARVISState) -> dict:
         ]
     )
 
+    guide_keywords = [
+        "help me with",
+        "guide me",
+        "step by step",
+        "how do i",
+        "what should i do",
+        "i'm stuck",
+        "i am stuck",
+        "walk me through",
+    ]
+
     intent = str(response.content).strip().lower()
 
-    if intent not in ("chat", "task"):
+    if any(kw in state["user_input"].lower() for kw in guide_keywords):
+        intent = "guide"
+
+    if intent not in ("chat", "task", "guide"):  # include guide as valid
         intent = "chat"
 
     plan = ""
@@ -122,6 +136,8 @@ def route_after_planner(state: JARVISState) -> str:
 
     if state["intent"] == "task":
         return "safety"
+    elif state["intent"] == "guide":
+        return "guide"
 
     return "chat"
 
@@ -319,4 +335,43 @@ Rules:
         "action_history": history,
         "avatar_mood": "happy" if all_succeeded else "stuck",
         "pending_permission": "",
+    }
+
+
+def guide_node(state: JARVISState) -> dict:
+    """Read screen content and give numbered step-by-step guidance."""
+    from tools.registry import registry
+
+    window = registry.call("get_active_window")
+    screen_text = registry.call("read_screen_text")
+
+    context = (
+        f"Currently active app: {window}\n\n"
+        f"Text visible on screen:\n{screen_text}\n\n"
+        f"User's question: {state['user_input']}"
+    )
+
+    messages = [
+        SystemMessage(
+            content=(
+                "You are JARVIS, a helpful desktop assistant. "
+                "The user has asked for help. You can see what's on their screen. "
+                "Give clear, numbered, step-by-step instructions. "
+                "Be specific about what to click, type, or look for. "
+                "Keep steps short and actionable. "
+                "Reference what you actually see on the screen."
+            )
+        ),
+        HumanMessage(content=context),
+    ]
+
+    response = llm.invoke(messages)
+
+    return {
+        "final_reply": str(response.content).strip(),
+        "avatar_mood": "speaking",
+        "action_history": [
+            *state.get("action_history", []),
+            f"Guide Mode: analysed screen, active app: {window}",
+        ],
     }

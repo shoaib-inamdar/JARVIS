@@ -10,3 +10,5 @@ pyautogui
 pillow 
 duckduckgo-search 
 psutil
+pytesseract 
+pygetwindow

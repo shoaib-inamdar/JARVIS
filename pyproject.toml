@@ -14,6 +14,7 @@ keywords = ["ai", "assistant", "desktop", "anime", "langgraph", "gemini"]
 
 dependencies = [
     "ddgs>=9.16.1",
+    "duckduckgo-search>=8.1.1",
     "fastapi>=0.141.1",
     "google-genai>=2.25.0",
     "langchain-google-genai>=4.4.2",
@@ -22,6 +23,8 @@ dependencies = [
     "pillow>=13.0.0",
     "psutil>=7.2.2",
     "pyautogui>=0.9.54",
+    "pygetwindow>=0.0.9",
+    "pytesseract>=0.3.13",
     "python-dotenv>=1.0",
     "rich>=13.0",
     "uvicorn>=0.53.0",
